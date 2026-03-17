@@ -80,6 +80,7 @@ CALLBACK_ADMIN_USERS_PAGE = "admin_users_page:"
 CALLBACK_ADMIN_CSVS_PAGE = "admin_csvs_page:"
 
 STATE_EXPECTING_UPLOAD = "expecting_upload"
+STATE_EXPECTING_SETGROUP = "expecting_setgroup"
 STATE_EXPECTING_BAN_INPUT = "expecting_ban_input"
 STATE_EXPECTING_UNBAN_INPUT = "expecting_unban_input"
 STATE_EXPECTING_CREDITS_INPUT = "expecting_credits_input"
@@ -587,6 +588,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     context.user_data[STATE_EXPECTING_UPLOAD] = False
+    context.user_data[STATE_EXPECTING_SETGROUP] = False
     context.user_data[STATE_EXPECTING_BAN_INPUT] = False
     context.user_data[STATE_EXPECTING_UNBAN_INPUT] = False
     context.user_data[STATE_EXPECTING_CREDITS_INPUT] = False
@@ -621,7 +623,11 @@ async def setgroup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not await require_access(update):
         return
     if not context.args:
-        await update.message.reply_text("Usage: /setgroup <group_username_or_id>")
+        context.user_data[STATE_EXPECTING_SETGROUP] = True
+        await update.message.reply_text(
+            "Send target group now (username/link/id).\n"
+            "Examples: @ONEHACKGOD or ONEHACKGOD or https://t.me/ONEHACKGOD"
+        )
         return
     group_value = " ".join(context.args).strip()
 
@@ -640,6 +646,7 @@ async def setgroup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     context.user_data["target_group"] = group_value
+    context.user_data[STATE_EXPECTING_SETGROUP] = False
     title = getattr(resolved, "title", None) or getattr(resolved, "username", None) or str(group_value)
     await update.message.reply_text(f"Group is set successfully: {title}")
 
@@ -706,6 +713,7 @@ async def menu_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
     if query.data == CALLBACK_UPLOAD:
         context.user_data[STATE_EXPECTING_UPLOAD] = True
+        context.user_data[STATE_EXPECTING_SETGROUP] = False
         context.user_data[STATE_EXPECTING_BAN_INPUT] = False
         context.user_data[STATE_EXPECTING_UNBAN_INPUT] = False
         context.user_data[STATE_EXPECTING_CREDITS_INPUT] = False
@@ -721,6 +729,7 @@ async def menu_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         if not is_superadmin(user_id):
             await query.message.reply_text("Only superadmin can open Admin Panel.")
             return
+        context.user_data[STATE_EXPECTING_SETGROUP] = False
         context.user_data[STATE_EXPECTING_BAN_INPUT] = False
         context.user_data[STATE_EXPECTING_UNBAN_INPUT] = False
         context.user_data[STATE_EXPECTING_CREDITS_INPUT] = False
@@ -794,6 +803,32 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     sender_id = update.effective_user.id
     text = update.message.text.strip()
+
+    if context.user_data.get(STATE_EXPECTING_SETGROUP):
+        group_value = text
+        if not group_value:
+            await update.message.reply_text("Group value cannot be empty. Send username/link/id.")
+            return
+
+        client: TelegramClient | None = context.application.bot_data.get("telethon_client")
+        if client is None:
+            await update.message.reply_text("Group check failed: Telethon client is not initialized.")
+            return
+
+        try:
+            resolved = await client.get_entity(normalize_group_identifier(group_value))
+        except Exception as exc:
+            await update.message.reply_text(
+                "Group is NOT set. I could not verify this target. "
+                f"Error: {exc}"
+            )
+            return
+
+        context.user_data["target_group"] = group_value
+        context.user_data[STATE_EXPECTING_SETGROUP] = False
+        title = getattr(resolved, "title", None) or getattr(resolved, "username", None) or str(group_value)
+        await update.message.reply_text(f"Group is set successfully: {title}")
+        return
 
     if is_superadmin(sender_id) and context.user_data.get(STATE_EXPECTING_BAN_INPUT):
         if not text.isdigit():

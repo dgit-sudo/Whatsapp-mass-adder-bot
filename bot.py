@@ -57,7 +57,7 @@ API_ID_RAW = os.getenv("API_ID", "").strip()
 API_HASH = os.getenv("API_HASH", "").strip()
 SESSION_NAME = os.getenv("SESSION_NAME", "adder_session")
 SUPPORT_CHAT_ID_RAW = os.getenv("SUPPORT_CHAT_ID", "").strip()
-SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "").strip().lstrip("@")
+SUPPORT_USERNAME = "dhyanam"
 DEFAULT_DELAY_SECONDS = float(os.getenv("DEFAULT_DELAY_SECONDS", "8"))
 DELAY_JITTER_SECONDS = float(os.getenv("DELAY_JITTER_SECONDS", "4"))
 MAX_PER_RUN = int(os.getenv("MAX_PER_RUN", "50"))
@@ -69,7 +69,6 @@ DB_PATH = os.getenv("DB_PATH", "data/bot.db").strip()
 UPLOAD_ARCHIVE_DIR = os.getenv("UPLOAD_ARCHIVE_DIR", "data/uploads").strip()
 
 CALLBACK_UPLOAD = "menu_upload"
-CALLBACK_SUPPORT = "menu_support"
 CALLBACK_ADMIN = "menu_admin"
 CALLBACK_ADMIN_USERS = "admin_users"
 CALLBACK_ADMIN_CSVS = "admin_csvs"
@@ -81,7 +80,6 @@ CALLBACK_ADMIN_USERS_PAGE = "admin_users_page:"
 CALLBACK_ADMIN_CSVS_PAGE = "admin_csvs_page:"
 
 STATE_EXPECTING_UPLOAD = "expecting_upload"
-STATE_EXPECTING_SUPPORT = "expecting_support"
 STATE_EXPECTING_BAN_INPUT = "expecting_ban_input"
 STATE_EXPECTING_UNBAN_INPUT = "expecting_unban_input"
 STATE_EXPECTING_CREDITS_INPUT = "expecting_credits_input"
@@ -485,12 +483,10 @@ def summarize_lines(label: str, values: Iterable[str], limit: int = 8) -> str:
 def build_main_menu_markup(user_id: int) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton("Upload CSV", callback_data=CALLBACK_UPLOAD)],
-        [InlineKeyboardButton("Contact Support", callback_data=CALLBACK_SUPPORT)],
+        [InlineKeyboardButton("Contact Support", url=f"https://t.me/{SUPPORT_USERNAME}")],
     ]
     if is_superadmin(user_id):
         rows.append([InlineKeyboardButton("Admin Panel", callback_data=CALLBACK_ADMIN)])
-    if SUPPORT_USERNAME:
-        rows.append([InlineKeyboardButton("Open Support Chat", url=f"https://t.me/{SUPPORT_USERNAME}")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -591,7 +587,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     context.user_data[STATE_EXPECTING_UPLOAD] = False
-    context.user_data[STATE_EXPECTING_SUPPORT] = False
     context.user_data[STATE_EXPECTING_BAN_INPUT] = False
     context.user_data[STATE_EXPECTING_UNBAN_INPUT] = False
     context.user_data[STATE_EXPECTING_CREDITS_INPUT] = False
@@ -629,8 +624,24 @@ async def setgroup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("Usage: /setgroup <group_username_or_id>")
         return
     group_value = " ".join(context.args).strip()
+
+    client: TelegramClient | None = context.application.bot_data.get("telethon_client")
+    if client is None:
+        await update.message.reply_text("Group check failed: Telethon client is not initialized.")
+        return
+
+    try:
+        resolved = await client.get_entity(normalize_group_identifier(group_value))
+    except Exception as exc:
+        await update.message.reply_text(
+            "Group is NOT set. I could not verify this target. "
+            f"Error: {exc}"
+        )
+        return
+
     context.user_data["target_group"] = group_value
-    await update.message.reply_text(f"Target group set to: {group_value}")
+    title = getattr(resolved, "title", None) or getattr(resolved, "username", None) or str(group_value)
+    await update.message.reply_text(f"Group is set successfully: {title}")
 
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -695,7 +706,6 @@ async def menu_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
     if query.data == CALLBACK_UPLOAD:
         context.user_data[STATE_EXPECTING_UPLOAD] = True
-        context.user_data[STATE_EXPECTING_SUPPORT] = False
         context.user_data[STATE_EXPECTING_BAN_INPUT] = False
         context.user_data[STATE_EXPECTING_UNBAN_INPUT] = False
         context.user_data[STATE_EXPECTING_CREDITS_INPUT] = False
@@ -705,18 +715,6 @@ async def menu_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             "Accepted headers: user_id, id, telegram_id\n"
             "If group is not set, run /setgroup first."
         )
-        return
-
-    if query.data == CALLBACK_SUPPORT:
-        context.user_data[STATE_EXPECTING_SUPPORT] = True
-        context.user_data[STATE_EXPECTING_UPLOAD] = False
-        context.user_data[STATE_EXPECTING_BAN_INPUT] = False
-        context.user_data[STATE_EXPECTING_UNBAN_INPUT] = False
-        context.user_data[STATE_EXPECTING_CREDITS_INPUT] = False
-        if resolve_support_chat_id() is None:
-            await query.message.reply_text("Support is not configured yet.")
-            return
-        await query.message.reply_text("Support mode enabled. Send your message now and it will be delivered.")
         return
 
     if query.data == CALLBACK_ADMIN:
@@ -829,31 +827,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
-    if not context.user_data.get(STATE_EXPECTING_SUPPORT):
-        return
-
-    support_chat_id = resolve_support_chat_id()
-    if support_chat_id is None:
-        await update.message.reply_text("Support is unavailable right now.")
-        context.user_data[STATE_EXPECTING_SUPPORT] = False
-        return
-
-    if not text:
-        await update.message.reply_text("Support message cannot be empty.")
-        return
-
-    source = update.effective_user
-    from_line = f"From user_id={source.id}"
-    if source.username:
-        from_line += f" username=@{source.username}"
-
-    await context.bot.send_message(
-        chat_id=support_chat_id,
-        text=f"Support request\n{from_line}\n\n{text}",
-    )
-
-    context.user_data[STATE_EXPECTING_SUPPORT] = False
-    await update.message.reply_text("Support message sent.", reply_markup=build_main_menu_markup(sender_id))
+    return
 
 
 async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

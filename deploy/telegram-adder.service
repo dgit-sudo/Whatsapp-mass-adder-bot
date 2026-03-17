@@ -1,0 +1,23 @@
+[Unit]
+Description=Telegram CSV Adder Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=botuser
+Group=botuser
+WorkingDirectory=/opt/telegram-csv-adder
+EnvironmentFile=/opt/telegram-csv-adder/.env
+ExecStart=/opt/telegram-csv-adder/.venv/bin/python /opt/telegram-csv-adder/bot.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+KillSignal=SIGINT
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

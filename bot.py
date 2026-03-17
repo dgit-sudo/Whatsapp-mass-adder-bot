@@ -417,7 +417,36 @@ def normalize_group_identifier(value: str) -> str | int:
     return cleaned
 
 
-def read_csv_user_ids(file_bytes: bytes) -> tuple[List[int], List[str]]:
+def normalize_user_identifier(raw_value: str) -> str | int | None:
+    value = raw_value.strip()
+    if not value:
+        return None
+
+    # Support tg://user?id=123 format.
+    if value.startswith("tg://user?id="):
+        value = value.replace("tg://user?id=", "", 1)
+
+    # Support t.me/<username> links.
+    if "t.me/" in value:
+        value = value.split("t.me/", 1)[1]
+        value = value.split("?", 1)[0]
+        value = value.split("/", 1)[0]
+
+    if value.startswith("@"):
+        value = value[1:]
+
+    if value.lstrip("-").isdigit():
+        parsed = int(value)
+        return parsed if parsed > 0 else None
+
+    # Basic Telegram username pattern.
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{2,31}", value):
+        return value
+
+    return None
+
+
+def read_csv_user_ids(file_bytes: bytes) -> tuple[List[str | int], List[str]]:
     decoded = None
     for encoding in ("utf-8-sig", "utf-8", "latin-1"):
         try:
@@ -435,32 +464,39 @@ def read_csv_user_ids(file_bytes: bytes) -> tuple[List[int], List[str]]:
         return [], []
 
     header = [c.strip().lower() for c in rows[0]]
-    has_header = any(h in {"user_id", "id", "telegram_id"} for h in header)
+    has_header = any(h in {"user_id", "id", "telegram_id", "username", "user", "link", "identifier"} for h in header)
 
-    user_ids: List[int] = []
+    user_ids: List[str | int] = []
     invalid_rows: List[str] = []
-    seen: set[int] = set()
+    seen: set[str] = set()
 
     def add_candidate(raw_value: str) -> None:
-        value = raw_value.strip()
-        if not value:
+        if not raw_value.strip():
             return
-        if not value.lstrip("-").isdigit():
-            invalid_rows.append(value)
+
+        normalized = normalize_user_identifier(raw_value)
+        if normalized is None:
+            invalid_rows.append(raw_value.strip())
             return
-        parsed = int(value)
-        if parsed <= 0:
-            invalid_rows.append(value)
+
+        dedupe_key = f"id:{normalized}" if isinstance(normalized, int) else f"user:{normalized.lower()}"
+        if dedupe_key in seen:
             return
-        if parsed in seen:
-            return
-        seen.add(parsed)
-        user_ids.append(parsed)
+        seen.add(dedupe_key)
+        user_ids.append(normalized)
 
     if has_header:
         dict_reader = csv.DictReader(io.StringIO(decoded))
         for item in dict_reader:
-            raw_id = (item.get("user_id") or "") or (item.get("id") or "") or (item.get("telegram_id") or "")
+            raw_id = (
+                (item.get("user_id") or "")
+                or (item.get("id") or "")
+                or (item.get("telegram_id") or "")
+                or (item.get("username") or "")
+                or (item.get("user") or "")
+                or (item.get("link") or "")
+                or (item.get("identifier") or "")
+            )
             add_candidate(raw_id)
     else:
         for row in rows:
@@ -614,8 +650,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/start - open control panel\n"
         "/help - show this message\n\n"
         "CSV format for upload:\n"
-        "- user_id header OR single-column IDs\n"
-        "- user IDs only (numeric), one per row"
+        "- Header or single-column CSV\n"
+        "- Supports: numeric user_id, @username, username, t.me link, tg://user?id=..."
     )
 
 
@@ -719,8 +755,8 @@ async def menu_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data[STATE_EXPECTING_CREDITS_INPUT] = False
         await query.message.reply_text(
             "Upload mode enabled.\n\n"
-            "Now send a CSV containing only Telegram user IDs.\n"
-            "Accepted headers: user_id, id, telegram_id\n"
+            "Now send a CSV containing Telegram user identifiers.\n"
+            "Accepted headers: user_id, id, telegram_id, username, user, link, identifier\n"
             "If group is not set, run /setgroup first."
         )
         return
@@ -935,14 +971,14 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     if invalid_rows:
         await update.message.reply_text(
-            "CSV contains invalid rows. Only numeric Telegram user IDs are allowed.\n\n"
+            "CSV contains invalid rows. Allowed formats: numeric user_id, @username, username, t.me link, tg://user?id=...\n\n"
             + summarize_lines("Invalid examples", invalid_rows)
             + f"\n\nArchive ID: {archive_id}"
         )
         return
 
     if not user_ids:
-        await update.message.reply_text(f"No valid Telegram user IDs found in CSV.\nArchive ID: {archive_id}")
+        await update.message.reply_text(f"No valid Telegram user identifiers found in CSV.\nArchive ID: {archive_id}")
         return
 
     update_upload_row_count(archive_id, len(user_ids))
